@@ -1,0 +1,49 @@
+# Daisy's relay on Fly.io (build step 5). Modelled on the die-relay app (C:\thunderbird-cafe\wish-die-demo\relay).
+#
+# DEPLOY WITH:   fly deploy --ha=false
+# Fly's default is TWO machines on a first deploy. The tables live in one process's memory, so with two
+# machines a table's two pages could land on different machines and never meet. After deploying, run
+# `fly status`: there must be exactly ONE machine. If two: `fly scale count 1`.
+#
+# The app name is separate from the public address, relay.daisy.thunderbird.cafe (DNS records at Wix plus
+# `fly certs add relay.daisy.thunderbird.cafe`). App names are global: if "daisy-relay" is taken, pick
+# another here and in the commands.
+app = 'daisy-relay'
+primary_region = 'sjc'
+
+[build]
+
+[env]
+  PORT = '8080'
+  # Pages allowed to use the relay (comma-separated). The local dev page (http://127.0.0.1:4321) is allowed
+  # during step 5 so the real relay can be tried from `npm run dev`; take it off before Daisy goes public
+  # (step 7), then `fly deploy --ha=false` again.
+  ALLOWED_ORIGINS = 'https://thunderbird.cafe,http://127.0.0.1:4321'
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  # Sleep when nobody is connected (owner, Oct 18). Fly stops the machine only when its proxy sees no
+  # connections, and an open WebSocket counts as one (concurrency by connections, below), so a game in
+  # progress keeps it awake. The first page after a sleep waits a few seconds while it starts; the page
+  # keeps retrying. To keep it always on (step 7, the lounge): min_machines_running = 1.
+  auto_stop_machines = 'stop'
+  auto_start_machines = true
+  min_machines_running = 0
+
+  [http_service.concurrency]
+    type = 'connections'
+    soft_limit = 800
+    hard_limit = 1000
+
+  [[http_service.checks]]
+    grace_period = '5s'
+    interval = '30s'
+    method = 'GET'
+    path = '/health'
+    timeout = '3s'
+
+[[vm]]
+  memory = '256mb'
+  cpu_kind = 'shared'
+  cpus = 1
