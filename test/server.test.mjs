@@ -188,7 +188,8 @@ test('the Fly files: one region, sleeps when idle but counts connections, health
   assert.match(toml, /ALLOWED_ORIGINS = 'https:\/\/thunderbird\.cafe,http:\/\/127\.0\.0\.1:4321,http:\/\/127\.0\.0\.1:4322'/);
   assert.match(toml, /fly deploy --ha=false/);
   const docker = readFileSync(new URL('../Dockerfile', import.meta.url), 'utf8');
-  assert.match(docker, /COPY server\.js tables\.js lounge-auth\.js atproto-pass\.js \.\//);
+  assert.match(docker, /COPY server\.js tables\.js lounge-auth\.js atproto-pass\.js lounge\.js atproto-lounge\.js \.\//);
+  for (const f of ['server.js', 'tables.js', 'lounge-auth.js', 'atproto-pass.js', 'lounge.js', 'atproto-lounge.js']) assert.ok(docker.includes(f), f);
   assert.match(docker, /npm ci --omit=dev/);
   const lock = JSON.parse(readFileSync(new URL('../package-lock.json', import.meta.url), 'utf8'));
   const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));

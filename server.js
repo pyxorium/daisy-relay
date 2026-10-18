@@ -13,14 +13,17 @@
 // It never logs messages, table ids or accounts: only a startup line and, now and then, counts.
 //
 // Step 6 (the lounge) adds the relay's own identity, did:web:relay.daisy.thunderbird.cafe (its DID document
-// at /.well-known/did.json), and a check on players' lounge passes (lounge-auth.js, atproto-pass.js). For
-// now the check answers only the probe, POST /lounge/probe: it says whether a pass is good and whose it is,
-// and remembers nothing but the pass's id until it expires.
+// at /.well-known/did.json), and a check on players' lounge passes (lounge-auth.js, atproto-pass.js).
+// The lounge (lounge.js) is a second kind of connection, at wss://relay.daisy.thunderbird.cafe/lounge: a page
+// enters with a pass, and the relay checks the account's lounge record and Bluesky's blocks
+// (atproto-lounge.js). POST /lounge/probe (the step 6 probe) still says whether a pass is good.
 import http from 'node:http';
 import { pathToFileURL } from 'node:url';
 import { WebSocketServer, WebSocket } from 'ws';
 import { createRelay, LIMITS } from './tables.js';
 import { didDocument, RELAY_HOST } from './lounge-auth.js';
+import { createLounge } from './lounge.js';
+import { randomInt, randomUUID } from 'node:crypto';
 
 export const DEFAULTS = Object.freeze({
   port: 8080,
@@ -41,7 +44,10 @@ export const DEFAULTS = Object.freeze({
   statsMs: 60 * 60_000,               // a counts line in the log, at most this often, only when busy
   publicHost: RELAY_HOST,             // the relay's own name: its identity is did:web:<publicHost>
   probePerMinute: 20,                 // lounge pass checks per address per minute (step 6's probe)
+  loungeSweepMs: 15_000,              // idle minglers and old invitations, checked this often
 });
+const TABLE_LETTERS = 'abcdefghijkmnopqrstuvwxyz23456789';     // as the page's own table ids (config.js)
+const newTableId = () => Array.from({ length: 10 }, () => TABLE_LETTERS[randomInt(TABLE_LETTERS.length)]).join('');
 
 const originAllowed = (cfg, origin) => cfg.allowedOrigins.includes('*') || cfg.allowedOrigins.includes(origin);
 
@@ -58,6 +64,16 @@ export function createRelayServer(userConfig = {}) {
   let passChecker = cfg.checkPass ? Promise.resolve(cfg.checkPass) : null;
   const getPassChecker = () => (passChecker ||= import('./atproto-pass.js').then((m) => m.atprotoPassChecker()).catch(() => { passChecker = null; return null; }));
   const probeUse = new Map();         // address → { n, since }
+
+  // The lounge: its lookups are Bluesky's (atproto-lounge.js), or handed in (cfg.lounge, the tests).
+  let lounge = null;
+  const getLounge = () => (lounge ||= (async () => {
+    const check = await getPassChecker();
+    let deps = cfg.lounge;
+    if (!deps) { try { deps = (await import('./atproto-lounge.js')).atprotoLounge(); } catch { deps = null; } }
+    if (!check || !deps) { lounge = null; return null; }
+    return createLounge({ checkPass: check, hasLoungeRecord: deps.hasLoungeRecord, hiddenFrom: deps.hiddenFrom, newTableId, newId: randomUUID, ...(cfg.now ? { now: cfg.now } : {}), ...(cfg.loungeLimits ? { limits: cfg.loungeLimits } : {}) });
+  })());
 
   const json = (res, status, body, headers = {}) => {
     res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', ...headers });
@@ -131,20 +147,21 @@ export function createRelayServer(userConfig = {}) {
       socket.destroy();
     };
     const path = (req.url || '').split('?')[0];
-    if (path !== '/') return refuse(404, 'Not Found');
+    if (path !== '/' && path !== '/lounge') return refuse(404, 'Not Found');
     const origin = req.headers.origin;
     if (origin !== undefined && !originAllowed(cfg, origin)) return refuse(403, 'Forbidden');
     if (conns.size >= cfg.maxConnections) return refuse(503, 'Service Unavailable');
     const ip = clientIp(req);
     if ((perIp.get(ip) || 0) >= cfg.maxPerIp) return refuse(429, 'Too Many Requests');
-    wss.handleUpgrade(req, socket, head, (ws) => onOpen(ws, ip));
+    wss.handleUpgrade(req, socket, head, (ws) => (path === '/lounge' ? onLoungeOpen(ws, ip) : onOpen(ws, ip)));
   });
 
   function deliver(out) {
-    for (const { conn, msg } of out) {
+    for (const { conn, msg, close } of out) {
       const c = conns.get(conn);
       if (!c || conn.readyState !== WebSocket.OPEN) continue;
-      if (msg.type === 'joined') { c.joined = true; clearTimeout(c.joinTimer); }
+      if (close) { conn.close(close.code, close.why); continue; }
+      if (msg.type === 'joined' || (c.kind === 'lounge' && msg.type === 'in')) { c.joined = true; clearTimeout(c.joinTimer); }
       if (msg.type === 'replaced') c.joined = false;
       if (msg.type === 'error' && ++c.errors >= cfg.maxErrors) { conn.close(1008, 'too many errors'); continue; }
       if (conn.bufferedAmount > cfg.maxBufferedBytes) { conn.terminate(); continue; }
@@ -169,11 +186,40 @@ export function createRelayServer(userConfig = {}) {
   }
 
   function onClose(ws, c) {
-    if (!conns.delete(ws)) return;
+    if (!conns.has(ws)) return;
     clearTimeout(c.joinTimer);
     const n = (perIp.get(c.ip) || 1) - 1;
     if (n <= 0) perIp.delete(c.ip); else perIp.set(c.ip, n);
+    if (c.kind === 'lounge') { const out = c.lounge ? c.lounge.close(ws) : []; conns.delete(ws); deliver(out); return; }
+    conns.delete(ws);
     deliver(relay.close(ws));
+  }
+
+  // A lounge connection (step 6): messages go to lounge.js, in order, one at a time per connection.
+  function onLoungeOpen(ws, ip) {
+    perIp.set(ip, (perIp.get(ip) || 0) + 1);
+    const c = { ip, kind: 'lounge', joined: false, errors: 0, alive: true, joinTimer: null, lounge: null, queue: Promise.resolve() };
+    conns.set(ws, c);
+    c.joinTimer = setTimeout(() => { if (!c.joined) ws.close(1008, 'enter the lounge first'); }, cfg.joinWithinMs);
+    ws.on('pong', () => { c.alive = true; });
+    const ready = getLounge().then((l) => {
+      if (!l) { deliver([{ conn: ws, msg: { type: 'refused', why: 'NotReady' } }]); ws.close(1011, 'lounge not ready'); return null; }
+      if (conns.has(ws)) { c.lounge = l; l.open(ws); }
+      return l;
+    });
+    let tokens = 20, at = Date.now();               // 20 at once, then 5 a second: the lounge talks little
+    ws.on('message', (data, isBinary) => {
+      c.alive = true;
+      const t = Date.now();
+      tokens = Math.min(20, tokens + ((t - at) / 1000) * 5); at = t;
+      if (tokens < 1) return deliver([{ conn: ws, msg: { type: 'error', why: 'too many' } }]);
+      tokens -= 1;
+      if (isBinary) return deliver([{ conn: ws, msg: { type: 'error', why: 'not text' } }]);
+      const text = data.toString('utf8');
+      c.queue = c.queue.then(() => ready).then(async (l) => { if (l && c.lounge) deliver(await l.receive(ws, text)); }).catch(() => {});
+    });
+    ws.on('close', () => onClose(ws, c));
+    ws.on('error', () => { /* a close always follows */ });
   }
 
   // Dead connections (a phone that lost its signal, a laptop shut) are found by the heartbeat; the other
@@ -186,10 +232,11 @@ export function createRelayServer(userConfig = {}) {
     }
   }, cfg.heartbeatMs));
   timers.push(setInterval(() => relay.sweep(), cfg.sweepMs));
+  timers.push(setInterval(() => { if (lounge) lounge.then((l) => l && deliver(l.sweep())); }, cfg.loungeSweepMs));
   let lastStats = '';
   timers.push(setInterval(() => {
     const s = relay.stats();
-    const line = `tables ${s.tables}, connections ${s.connections}`;
+    const line = `tables ${s.tables}, connections ${conns.size}`;
     if (line !== lastStats && (s.tables || s.connections || lastStats)) log(line);
     lastStats = s.tables || s.connections ? line : '';
   }, cfg.statsMs));
@@ -198,6 +245,9 @@ export function createRelayServer(userConfig = {}) {
   return {
     server, cfg,
     stats: () => relay.stats(),
+    loungeStats: async () => (lounge ? (await lounge)?.stats() : null),
+    // Load Bluesky's packages now rather than when the first page enters the lounge (it takes a moment).
+    warm: () => getLounge(),
     listen: () => new Promise((resolve) => server.listen(cfg.port, cfg.host, () => resolve(server.address().port))),
     // Stop: tell every page the relay is going away (1012, "service restart"), so they reconnect at once.
     close: ({ crash = false } = {}) => new Promise((resolve) => {
@@ -223,6 +273,7 @@ if (isMain) {
   const r = createRelayServer(cfg);
   const port = await r.listen();
   console.log(`Daisy relay listening on :${port}; pages allowed from ${r.cfg.allowedOrigins.join(', ')}`);
+  r.warm().then((l) => console.log(l ? 'The lounge is ready.' : 'The lounge is not ready (Bluesky\'s packages are missing).'));
   const stop = async () => { await r.close(); process.exit(0); };
   process.on('SIGTERM', stop);
   process.on('SIGINT', stop);

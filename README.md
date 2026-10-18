@@ -24,9 +24,25 @@ with the account's key and addressed to this relay, and the relay checks it.
   not a service or a bare did:key), passes lasting at most 5 minutes, each pass used once.
 - `atproto-pass.js`: wired to `@atproto/xrpc-server` (`verifyJwt`) and `@atproto/identity` (account keys from
   plc.directory or the account's own domain, cached an hour).
-- **For now the check answers only the probe:** `POST /lounge/probe` with `Authorization: Bearer <pass>`
-  says whose pass it is, or why not (20 a minute per address; the allowed pages only). The throwaway probe
-  page (`/webtiles/daisy-probe/` in the site, at `http://127.0.0.1:4322`, never committed) uses it.
+- The lounge (below) checks every page's pass this way. `POST /lounge/probe` with `Authorization: Bearer
+  <pass>` still says whose pass it is, or why not (20 a minute per address; the allowed pages only): it
+  served step 6's throwaway probe page.
+
+### The lounge (`wss://relay.daisy.thunderbird.cafe/lounge`)
+
+- `lounge.js`: who is here, "Who else is mingling?", invitations, and the table both players said yes to.
+  A page enters with a pass; the relay checks the pass and the account's lounge record
+  (`cafe.thunderbird.daisy.lounge/self`), then counts it as here until the page leaves, opens a table, or
+  goes 10 minutes untouched. A snapshot lists at most 30 others, at most every 5 seconds, with anyone
+  blocked either way left out (if the block check fails, nobody is listed). An invitation lasts a minute;
+  the inviter only ever hears "invited" (declined, away, blocked and unnoticed look the same); the same
+  person again only after 5 minutes, at most 10 invitations in 10 minutes; someone already looking at an
+  invitation gets no second one. On Play the relay makes a table: the inviter at seat 1, the other at seat 2.
+- `atproto-lounge.js`: the lounge record read from the account's own server; blocks (direct and by list)
+  from Bluesky's public `app.bsky.graph.getRelationships`.
+- Nothing is kept on disk; a restart empties the lounge and the pages join again by themselves.
+- `test/lounge.test.mjs` (the lounge on its own, its lookups, and over real WebSockets) and
+  `test/lounge-standin.mjs` (the real server with stand-in lookups, for daisy-tiles' browser checks).
 
 ## Files
 
@@ -51,7 +67,7 @@ npm install
 npm test
 ```
 
-21 tests, a few seconds. Needs Node 22 or later. (`npm install` the first time after step 6 added the
+32 tests, a few seconds. Needs Node 22 or later. (`npm install` the first time after step 6 added the
 @atproto packages; it updates `package-lock.json`, which goes into the commit. After that, `npm ci`.)
 
 ## Settings
