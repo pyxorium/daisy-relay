@@ -6,9 +6,9 @@
 # `fly status`: there must be exactly ONE machine. If two: `fly scale count 1`.
 #
 # The app name is separate from the public address, relay.daisy.thunderbird.cafe (DNS records at Wix plus
-# `fly certs add relay.daisy.thunderbird.cafe`). App names are global: if "daisy-relay" is taken, pick
+# `fly certs add relay.daisy.thunderbird.cafe`). App names are global ("daisy-relay" was taken, Oct 18); if this one is, pick
 # another here and in the commands.
-app = 'daisy-relay'
+app = 'thunderbird-daisy-relay'
 primary_region = 'sjc'
 
 [build]

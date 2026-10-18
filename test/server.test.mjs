@@ -179,7 +179,7 @@ test('stopping (a deploy, a sleep) tells each page 1012; a new relay takes them 
 
 test('the Fly files: one region, sleeps when idle but counts connections, health check, both origins, the Dockerfile ships tables.js', () => {
   const toml = readFileSync(new URL('../fly.toml', import.meta.url), 'utf8');
-  assert.match(toml, /^app = 'daisy-relay'$/m);
+  assert.match(toml, /^app = 'thunderbird-daisy-relay'$/m);
   assert.match(toml, /^primary_region = 'sjc'$/m);
   assert.match(toml, /auto_stop_machines = 'stop'/);
   assert.match(toml, /min_machines_running = 0/);

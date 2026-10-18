@@ -1,7 +1,7 @@
 # Daisy relay
 
 The relay for **Daisy**, the two-computer dice game at https://thunderbird.cafe/webtiles/daisy/ (build
-step 5). It runs on Fly.io as its own small app, `daisy-relay`, at **`wss://relay.daisy.thunderbird.cafe/`**.
+step 5). It runs on Fly.io as its own small app, `thunderbird-daisy-relay` ("daisy-relay" was taken), at **`wss://relay.daisy.thunderbird.cafe/`**.
 
 It **passes messages and stores nothing**: no match, no move, no record, nothing on disk. While it runs, it
 knows which account sits at which seat of which table, so it can pass each page's messages to the other
