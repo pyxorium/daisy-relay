@@ -177,7 +177,7 @@ test('stopping (a deploy, a sleep) tells each page 1012; a new relay takes them 
   await again.r.close();
 });
 
-test('the Fly files: one region, sleeps when idle but counts connections, health check, both origins, the Dockerfile ships tables.js', () => {
+test('the Fly files: one region, sleeps when idle but counts connections, health check, the origins, the Dockerfile ships the relay\'s files, the lock file is current', () => {
   const toml = readFileSync(new URL('../fly.toml', import.meta.url), 'utf8');
   assert.match(toml, /^app = 'thunderbird-daisy-relay'$/m);
   assert.match(toml, /^primary_region = 'sjc'$/m);
@@ -185,13 +185,74 @@ test('the Fly files: one region, sleeps when idle but counts connections, health
   assert.match(toml, /min_machines_running = 0/);
   assert.match(toml, /type = 'connections'/);
   assert.match(toml, /path = '\/health'/);
-  assert.match(toml, /ALLOWED_ORIGINS = 'https:\/\/thunderbird\.cafe,http:\/\/127\.0\.0\.1:4321'/);
+  assert.match(toml, /ALLOWED_ORIGINS = 'https:\/\/thunderbird\.cafe,http:\/\/127\.0\.0\.1:4321,http:\/\/127\.0\.0\.1:4322'/);
   assert.match(toml, /fly deploy --ha=false/);
   const docker = readFileSync(new URL('../Dockerfile', import.meta.url), 'utf8');
-  assert.match(docker, /COPY server\.js tables\.js \.\//);
+  assert.match(docker, /COPY server\.js tables\.js lounge-auth\.js atproto-pass\.js \.\//);
   assert.match(docker, /npm ci --omit=dev/);
   const lock = JSON.parse(readFileSync(new URL('../package-lock.json', import.meta.url), 'utf8'));
   const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
-  assert.deepEqual(lock.packages[''].dependencies, pkg.dependencies);
-  assert.deepEqual(Object.keys(lock.packages), ['', 'node_modules/ws']);
+  assert.deepEqual(lock.packages[''].dependencies, pkg.dependencies, 'package-lock.json is out of date: run npm install');
+  for (const name of Object.keys(pkg.dependencies)) assert.ok(lock.packages[`node_modules/${name}`], `${name} is missing from package-lock.json: run npm install`);
+});
+
+test('step 6: the relay\'s identity at /.well-known/did.json', async () => {
+  const { r, port } = await start();
+  const res = await fetch(`http://127.0.0.1:${port}/.well-known/did.json`);
+  assert.equal(res.status, 200);
+  assert.match(res.headers.get('content-type'), /application\/json/);
+  const doc = await res.json();
+  assert.equal(doc.id, 'did:web:relay.daisy.thunderbird.cafe');
+  assert.equal(doc.service[0].id, '#daisy_relay');
+  await r.close();
+});
+
+test('step 6: the pass probe answers allowed pages (CORS), says whose pass it is or why not, and limits each address', async () => {
+  const seen = [];
+  const checkPass = async (token) => {
+    seen.push(token);
+    if (token === 'good.pass.token') return { did: 'did:plc:rqbqpaaluty5v47jwciowpik', exp: 1792400000 };
+    throw Object.assign(new Error('jwt audience does not match service did'), { code: 'BadJwtAudience' });
+  };
+  const { r, port } = await start({ checkPass, probePerMinute: 6 });
+  const url = `http://127.0.0.1:${port}/lounge/probe`;
+  const probe = (origin, auth) => fetch(url, { method: 'POST', headers: { origin, ...(auth ? { authorization: auth } : {}) } });
+  // The browser's preflight: yes for the allowed pages, no for others.
+  const pre = await fetch(url, { method: 'OPTIONS', headers: { origin: 'http://127.0.0.1:4321', 'access-control-request-method': 'POST', 'access-control-request-headers': 'authorization' } });
+  assert.equal(pre.status, 204);
+  assert.equal(pre.headers.get('access-control-allow-origin'), 'http://127.0.0.1:4321');
+  assert.match(pre.headers.get('access-control-allow-headers'), /authorization/);
+  assert.equal((await fetch(url, { method: 'OPTIONS', headers: { origin: 'https://example.com' } })).status, 403);
+  // Answers.
+  let res = await probe(SITE, 'Bearer good.pass.token');
+  assert.equal(res.status, 200);
+  assert.equal(res.headers.get('access-control-allow-origin'), SITE);
+  assert.deepEqual(await res.json(), { ok: true, did: 'did:plc:rqbqpaaluty5v47jwciowpik', expiresAt: new Date(1792400000 * 1000).toISOString() });
+  res = await probe(SITE, 'Bearer bad.pass.token');
+  assert.equal(res.status, 401);
+  assert.deepEqual(await res.json(), { ok: false, error: 'BadJwtAudience', message: 'jwt audience does not match service did' });
+  res = await probe(SITE);
+  assert.equal(res.status, 401);
+  assert.equal((await res.json()).error, 'NoPass');
+  res = await probe('https://example.com', 'Bearer good.pass.token');
+  assert.equal(res.status, 403);
+  assert.equal(seen.length, 2, 'refused requests never reach the check');
+  // The limit per address: 6 a minute here; 3 used above (the other site's was turned away before counting).
+  const statuses = [];
+  for (let i = 0; i < 4; i++) statuses.push((await probe(SITE, 'Bearer good.pass.token')).status);
+  assert.deepEqual(statuses, [200, 200, 200, 429]);
+  await r.close();
+});
+
+test('step 6: without the atproto packages the probe says it isn\'t ready, and the tables still work', async () => {
+  const { r, port, url } = await start({ checkPass: null });
+  const res = await fetch(`http://127.0.0.1:${port}/lounge/probe`, { method: 'POST', headers: { origin: SITE, authorization: 'Bearer a.b.c' } });
+  // With the packages installed this is a real check (401, a bad pass); without them, 503.
+  assert.ok([401, 503].includes(res.status), String(res.status));
+  if (res.status === 503) assert.equal((await res.json()).error, 'NotReady');
+  const a = await page(url);
+  a.send({ type: 'join', table: TABLE, seat: 1, ...A });
+  assert.equal((await a.next()).type, 'joined');
+  a.ws.close();
+  await r.close();
 });

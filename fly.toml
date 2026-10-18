@@ -18,7 +18,8 @@ primary_region = 'sjc'
   # Pages allowed to use the relay (comma-separated). The local dev page (http://127.0.0.1:4321) is allowed
   # during step 5 so the real relay can be tried from `npm run dev`; take it off before Daisy goes public
   # (step 7), then `fly deploy --ha=false` again.
-  ALLOWED_ORIGINS = 'https://thunderbird.cafe,http://127.0.0.1:4321'
+  # http://127.0.0.1:4322 is step 6's throwaway pass probe (npm run dev -- --port 4322): take it off with 4321.
+  ALLOWED_ORIGINS = 'https://thunderbird.cafe,http://127.0.0.1:4321,http://127.0.0.1:4322'
 
 [http_service]
   internal_port = 8080

@@ -10,6 +10,24 @@ seat and tell each page when the other one comes or goes. The dice come from bot
 change a result. A restart (a deploy, or the machine sleeping) costs a reconnect, never the match: both
 pages keep everything and ask each other for what they missed.
 
+## Step 6: the relay's identity and lounge passes
+
+The lounge (build step 6) needs to know who a player is. The relay has its own identity,
+**`did:web:relay.daisy.thunderbird.cafe`** (its DID document at `/.well-known/did.json`, with one service,
+`#daisy_relay`). A player who turns mingling on agrees, when signing in, to the permission
+`rpc:cafe.thunderbird.daisy.lounge.enter?aud=did:web:relay.daisy.thunderbird.cafe%23daisy_relay`; the page
+then asks the player's own server for a **pass** (`com.atproto.server.getServiceAuth`), a short token signed
+with the account's key and addressed to this relay, and the relay checks it.
+
+- `lounge-auth.js`: the identity, and `createPassChecker`: Bluesky's `verifyJwt` (format, expiry, audience,
+  method, signature, a second key lookup in case of a rotated key), plus: only accounts (did:plc, did:web;
+  not a service or a bare did:key), passes lasting at most 5 minutes, each pass used once.
+- `atproto-pass.js`: wired to `@atproto/xrpc-server` (`verifyJwt`) and `@atproto/identity` (account keys from
+  plc.directory or the account's own domain, cached an hour).
+- **For now the check answers only the probe:** `POST /lounge/probe` with `Authorization: Bearer <pass>`
+  says whose pass it is, or why not (20 a minute per address; the allowed pages only). The throwaway probe
+  page (`/webtiles/daisy-probe/` in the site, at `http://127.0.0.1:4322`, never committed) uses it.
+
 ## Files
 
 - `tables.js`: the relay's rules (seats, passing messages, presence, the house version passed on, limits).
@@ -18,27 +36,30 @@ pages keep everything and ask each other for what they missed.
 - `server.js`: the network around it, with the `ws` package: `GET /health`, the origin check, limits
   (connections in all and per address, frame size, joining within 30 s, too many mistakes), a heartbeat
   that finds dead connections, and a clean stop (each page hears 1012 and reconnects at once).
+- `lounge-auth.js`, `atproto-pass.js`: the relay's identity and the lounge pass check (step 6, above).
 - `fly.toml`, `Dockerfile`, `.dockerignore`: the Fly app (modelled on the die-relay app).
 - `scripts/sync-tables.mjs`: `npm run sync` copies tables.js from daisy-tiles; `--check` only compares.
-- `test/`: `server.test.mjs` (the network layer) and `with-daisy-tiles.test.mjs` (needs daisy-tiles beside
+- `test/`: `lounge-auth.test.mjs` (the pass check with Bluesky's real code: passes signed by real
+  keypairs, accepted and refused), `server.test.mjs` (the network layer, the DID document, the probe) and `with-daisy-tiles.test.mjs` (needs daisy-tiles beside
   this folder: the copy matches; the stand-in and this relay answer a script of messages identically; a
   whole match between two real referees through this relay, restarted mid-match, both records check out).
 
 ## Run the tests
 
 ```
-npm ci
+npm install
 npm test
 ```
 
-12 tests, a few seconds. Needs Node 22 or later.
+21 tests, a few seconds. Needs Node 22 or later. (`npm install` the first time after step 6 added the
+@atproto packages; it updates `package-lock.json`, which goes into the commit. After that, `npm ci`.)
 
 ## Settings
 
 | Env var | Default | Meaning |
 |---|---|---|
 | `PORT` | 8080 | Listen port |
-| `ALLOWED_ORIGINS` | `https://thunderbird.cafe` | Pages allowed to connect, comma-separated (`*` for any). In `fly.toml`: thunderbird.cafe and, during step 5, `http://127.0.0.1:4321` (take it off before going public). A client that isn't a browser sends no origin and is let in: the check is a courtesy, not a lock. |
+| `ALLOWED_ORIGINS` | `https://thunderbird.cafe` | Pages allowed to connect, comma-separated (`*` for any). In `fly.toml`: thunderbird.cafe and, while building, `http://127.0.0.1:4321` (the dev page) and `http://127.0.0.1:4322` (step 6's probe); take both off before going public. A client that isn't a browser sends no origin and is let in: the check is a courtesy, not a lock. |
 | `MAX_CONNECTIONS` | 1000 | Connections in all |
 | `MAX_PER_IP` | 20 | Connections per address (Fly's `fly-client-ip` header) |
 

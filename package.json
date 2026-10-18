@@ -6,13 +6,20 @@
   "license": "UNLICENSED",
   "type": "module",
   "main": "server.js",
-  "engines": { "node": ">=22" },
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "start": "node server.js",
     "sync": "node scripts/sync-tables.mjs",
     "test": "node --test test/*.test.mjs"
   },
   "dependencies": {
+    "@atproto/identity": "^0.5.13",
+    "@atproto/xrpc-server": "^0.13.5",
     "ws": "^8.22.0"
+  },
+  "devDependencies": {
+    "@atproto/crypto": "^0.5.7"
   }
 }
