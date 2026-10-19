@@ -24,9 +24,8 @@ with the account's key and addressed to this relay, and the relay checks it.
   not a service or a bare did:key), passes lasting at most 5 minutes, each pass used once.
 - `atproto-pass.js`: wired to `@atproto/xrpc-server` (`verifyJwt`) and `@atproto/identity` (account keys from
   plc.directory or the account's own domain, cached an hour).
-- The lounge (below) checks every page's pass this way. `POST /lounge/probe` with `Authorization: Bearer
-  <pass>` still says whose pass it is, or why not (20 a minute per address; the allowed pages only): it
-  served step 6's throwaway probe page.
+- The lounge (below) checks every page's pass this way. (Step 6's `POST /lounge/probe`, which served a
+  throwaway probe page, was removed in step 7.)
 
 ### The lounge (`wss://relay.daisy.thunderbird.cafe/lounge`)
 
@@ -56,7 +55,7 @@ with the account's key and addressed to this relay, and the relay checks it.
 - `fly.toml`, `Dockerfile`, `.dockerignore`: the Fly app (modelled on the die-relay app).
 - `scripts/sync-tables.mjs`: `npm run sync` copies tables.js from daisy-tiles; `--check` only compares.
 - `test/`: `lounge-auth.test.mjs` (the pass check with Bluesky's real code: passes signed by real
-  keypairs, accepted and refused), `server.test.mjs` (the network layer, the DID document, the probe) and `with-daisy-tiles.test.mjs` (needs daisy-tiles beside
+  keypairs, accepted and refused), `server.test.mjs` (the network layer, the DID document, the probe route gone) and `with-daisy-tiles.test.mjs` (needs daisy-tiles beside
   this folder: the copy matches; the stand-in and this relay answer a script of messages identically; a
   whole match between two real referees through this relay, restarted mid-match, both records check out).
 
@@ -67,7 +66,7 @@ npm install
 npm test
 ```
 
-32 tests, a few seconds. Needs Node 22 or later. (`npm install` the first time after step 6 added the
+31 tests, a few seconds. Needs Node 22 or later. (`npm install` the first time after step 6 added the
 @atproto packages; it updates `package-lock.json`, which goes into the commit. After that, `npm ci`.)
 
 ## Settings
@@ -75,7 +74,7 @@ npm test
 | Env var | Default | Meaning |
 |---|---|---|
 | `PORT` | 8080 | Listen port |
-| `ALLOWED_ORIGINS` | `https://thunderbird.cafe` | Pages allowed to connect, comma-separated (`*` for any). In `fly.toml`: thunderbird.cafe and, while building, `http://127.0.0.1:4321` (the dev page) and `http://127.0.0.1:4322` (step 6's probe); take both off before going public. A client that isn't a browser sends no origin and is let in: the check is a courtesy, not a lock. |
+| `ALLOWED_ORIGINS` | `https://thunderbird.cafe` | Pages allowed to connect, comma-separated (`*` for any). In `fly.toml`: thunderbird.cafe and `http://127.0.0.1:4321` (the dev page, kept so changes can be tried against the real relay; owner, Oct 19). A client that isn't a browser sends no origin and is let in: the check is a courtesy, not a lock. |
 | `MAX_CONNECTIONS` | 1000 | Connections in all |
 | `MAX_PER_IP` | 20 | Connections per address (Fly's `fly-client-ip` header) |
 
@@ -97,13 +96,13 @@ fly status
 
 `fly status` must list **one** machine. If it lists two: `fly scale count 1`.
 
-The machine **sleeps when nobody is connected** (`auto_stop_machines = 'stop'`, `min_machines_running = 0`).
-Fly counts open WebSockets as connections, so a game in progress keeps it awake; the first page after a
-sleep waits a few seconds while it starts (the page keeps retrying). To keep it always on (later, for the
-lounge): `min_machines_running = 1`, then deploy.
+The machine is **always on** since step 7 (`min_machines_running = 1`; owner, Oct 19, revisited Dec 2026).
+To let it sleep when nobody is connected again: `min_machines_running = 0`, then deploy. Fly counts open
+WebSockets as connections, so a sleeping relay still stays awake through a game; the first page after a
+sleep waits a few seconds while it starts (the page keeps retrying).
 
-**The address:** `relay.daisy.thunderbird.cafe`, DNS at Wix (an A record and an AAAA record to the app's
-addresses from `fly ips list`) and a Fly certificate (`fly certs add relay.daisy.thunderbird.cafe`).
+**The address:** `relay.daisy.thunderbird.cafe`, DNS at Wix (a CNAME to the app's `.fly.dev` name; Wix has
+no AAAA records) and a Fly certificate (`fly certs add relay.daisy.thunderbird.cafe`).
 
 **Roll back:** `git revert HEAD`, then `fly deploy --ha=false`.
 

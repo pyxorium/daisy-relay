@@ -16,7 +16,7 @@
 // at /.well-known/did.json), and a check on players' lounge passes (lounge-auth.js, atproto-pass.js).
 // The lounge (lounge.js) is a second kind of connection, at wss://relay.daisy.thunderbird.cafe/lounge: a page
 // enters with a pass, and the relay checks the account's lounge record and Bluesky's blocks
-// (atproto-lounge.js). POST /lounge/probe (the step 6 probe) still says whether a pass is good.
+// (atproto-lounge.js). (The step 6 probe route, POST /lounge/probe, was removed in step 7: nothing used it.)
 import http from 'node:http';
 import { pathToFileURL } from 'node:url';
 import { WebSocketServer, WebSocket } from 'ws';
@@ -43,7 +43,6 @@ export const DEFAULTS = Object.freeze({
   maxBufferedBytes: 4 * 1024 * 1024,  // a page this far behind is dropped (it reconnects and catches up)
   statsMs: 60 * 60_000,               // a counts line in the log, at most this often, only when busy
   publicHost: RELAY_HOST,             // the relay's own name: its identity is did:web:<publicHost>
-  probePerMinute: 20,                 // lounge pass checks per address per minute (step 6's probe)
   loungeSweepMs: 15_000,              // idle minglers and old invitations, checked this often
 });
 const TABLE_LETTERS = 'abcdefghijkmnopqrstuvwxyz23456789';     // as the page's own table ids (config.js)
@@ -60,10 +59,9 @@ export function createRelayServer(userConfig = {}) {
   const log = cfg.log || ((line) => console.log(line));
 
   // The lounge pass check (step 6): Bluesky's packages, loaded the first time a pass arrives, or one
-  // handed in (the tests). Without the packages the probe answers "not ready" and the rest runs as before.
+  // handed in (the tests). Without the packages the lounge isn't ready and the tables run as before.
   let passChecker = cfg.checkPass ? Promise.resolve(cfg.checkPass) : null;
   const getPassChecker = () => (passChecker ||= import('./atproto-pass.js').then((m) => m.atprotoPassChecker()).catch(() => { passChecker = null; return null; }));
-  const probeUse = new Map();         // address → { n, since }
 
   // The lounge: its lookups are Bluesky's (atproto-lounge.js), or handed in (cfg.lounge, the tests).
   let lounge = null;
@@ -79,49 +77,10 @@ export function createRelayServer(userConfig = {}) {
     res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', ...headers });
     res.end(JSON.stringify(body));
   };
-  // Pages from the allowed sites may call the probe from the browser (CORS); others get no permission.
-  const corsFor = (origin) => (origin && originAllowed(cfg, origin)
-    ? { 'access-control-allow-origin': origin, vary: 'Origin' } : {});
-
-  async function probe(req, res) {
-    const origin = req.headers.origin;
-    const cors = corsFor(origin);
-    if (origin !== undefined && !cors['access-control-allow-origin']) return json(res, 403, { ok: false, error: 'Forbidden', message: 'pages from this site may not use the relay' });
-    const ip = clientIp(req), t = Date.now();
-    const u = probeUse.get(ip);
-    if (!u || t - u.since > 60_000) probeUse.set(ip, { n: 1, since: t });
-    else if (++u.n > cfg.probePerMinute) return json(res, 429, { ok: false, error: 'TooMany', message: 'too many passes from this address; wait a minute' }, cors);
-    if (probeUse.size > 10_000) probeUse.clear();
-    const m = /^Bearer ([A-Za-z0-9_.=-]+)$/.exec(String(req.headers.authorization || ''));
-    if (!m) return json(res, 401, { ok: false, error: 'NoPass', message: 'send the pass as Authorization: Bearer <pass>' }, cors);
-    const check = await getPassChecker();
-    if (!check) return json(res, 503, { ok: false, error: 'NotReady', message: 'the relay cannot check passes (its atproto packages are missing)' }, cors);
-    try {
-      const { did, exp } = await check(m[1]);
-      return json(res, 200, { ok: true, did, expiresAt: new Date(exp * 1000).toISOString() }, cors);
-    } catch (err) {
-      return json(res, 401, { ok: false, error: err.code || 'BadPass', message: String(err.message || err) }, cors);
-    }
-  }
-
   const server = http.createServer((req, res) => {
     const path = (req.url || '').split('?')[0];
     if (req.method === 'GET' && path === '/.well-known/did.json') {
       return json(res, 200, didDocument(cfg.publicHost), { 'cache-control': 'public, max-age=300', 'access-control-allow-origin': '*' });
-    }
-    if (path === '/lounge/probe') {
-      if (req.method === 'OPTIONS') {
-        const cors = corsFor(req.headers.origin);
-        res.writeHead(cors['access-control-allow-origin'] ? 204 : 403, {
-          ...cors, 'access-control-allow-methods': 'POST', 'access-control-allow-headers': 'authorization', 'access-control-max-age': '600',
-        });
-        return res.end();
-      }
-      if (req.method === 'POST') {
-        req.resume();                   // the pass is in the header; any body is ignored
-        probe(req, res).catch(() => { if (!res.headersSent) json(res, 500, { ok: false, error: 'Internal' }); });
-        return;
-      }
     }
     if (req.method === 'GET' && (path === '/health' || path === '/healthz')) {
       res.writeHead(200, { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' });

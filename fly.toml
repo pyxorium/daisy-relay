@@ -15,22 +15,21 @@ primary_region = 'sjc'
 
 [env]
   PORT = '8080'
-  # Pages allowed to use the relay (comma-separated). The local dev page (http://127.0.0.1:4321) is allowed
-  # during step 5 so the real relay can be tried from `npm run dev`; take it off before Daisy goes public
-  # (step 7), then `fly deploy --ha=false` again.
-  # http://127.0.0.1:4322 is step 6's throwaway pass probe (npm run dev -- --port 4322): take it off with 4321.
-  ALLOWED_ORIGINS = 'https://thunderbird.cafe,http://127.0.0.1:4321,http://127.0.0.1:4322'
+  # Pages allowed to use the relay (comma-separated). The local dev page (http://127.0.0.1:4321) stays
+  # allowed (owner, Oct 19: option B), so a change can be tried against the real relay from `npm run dev`
+  # before it goes live; the origin check is a courtesy, not a lock. Step 6's probe page (4322) is gone.
+  ALLOWED_ORIGINS = 'https://thunderbird.cafe,http://127.0.0.1:4321'
 
 [http_service]
   internal_port = 8080
   force_https = true
-  # Sleep when nobody is connected (owner, Oct 18). Fly stops the machine only when its proxy sees no
-  # connections, and an open WebSocket counts as one (concurrency by connections, below), so a game in
-  # progress keeps it awake. The first page after a sleep waits a few seconds while it starts; the page
-  # keeps retrying. To keep it always on (step 7, the lounge): min_machines_running = 1.
+  # Always on (owner, Oct 19, for going public): one machine stays running, so nobody waits for a start.
+  # To be revisited in two months (a scheduled reminder, Dec 18 2026) with the other Fly apps. To let it
+  # sleep when nobody is connected again: min_machines_running = 0, then `fly deploy --ha=false`. (Fly
+  # stops it only when no connection is open: an open WebSocket counts, concurrency by connections below.)
   auto_stop_machines = 'stop'
   auto_start_machines = true
-  min_machines_running = 0
+  min_machines_running = 1
 
   [http_service.concurrency]
     type = 'connections'
