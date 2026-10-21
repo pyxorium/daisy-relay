@@ -18,7 +18,9 @@ primary_region = 'sjc'
   # Pages allowed to use the relay (comma-separated). The local dev page (http://127.0.0.1:4321) stays
   # allowed (owner, Oct 19: option B), so a change can be tried against the real relay from `npm run dev`
   # before it goes live; the origin check is a courtesy, not a lock. Step 6's probe page (4322) is gone.
-  ALLOWED_ORIGINS = 'https://thunderbird.cafe,http://127.0.0.1:4321'
+  # Raku (Oct 21, Raku stage 5): its live page and its dev server (http://127.0.0.1:5180), so Raku and the
+  # Daisy page share one pool of tables.
+  ALLOWED_ORIGINS = 'https://thunderbird.cafe,http://127.0.0.1:4321,https://raku.lexicographer.space,http://127.0.0.1:5180'
 
 [http_service]
   internal_port = 8080

@@ -74,7 +74,7 @@ npm test
 | Env var | Default | Meaning |
 |---|---|---|
 | `PORT` | 8080 | Listen port |
-| `ALLOWED_ORIGINS` | `https://thunderbird.cafe` | Pages allowed to connect, comma-separated (`*` for any). In `fly.toml`: thunderbird.cafe and `http://127.0.0.1:4321` (the dev page, kept so changes can be tried against the real relay; owner, Oct 19). A client that isn't a browser sends no origin and is let in: the check is a courtesy, not a lock. |
+| `ALLOWED_ORIGINS` | `https://thunderbird.cafe` | Pages allowed to connect, comma-separated (`*` for any). In `fly.toml`: thunderbird.cafe and `http://127.0.0.1:4321` (the dev page, kept so changes can be tried against the real relay; owner, Oct 19), and Raku, `https://raku.lexicographer.space` and its dev server `http://127.0.0.1:5180` (Oct 21: Raku and the Daisy page share one pool of tables). A client that isn't a browser sends no origin and is let in: the check is a courtesy, not a lock. |
 | `MAX_CONNECTIONS` | 1000 | Connections in all |
 | `MAX_PER_IP` | 20 | Connections per address (Fly's `fly-client-ip` header) |
 
@@ -112,3 +112,5 @@ no AAAA records) and a Fly certificate (`fly certs add relay.daisy.thunderbird.c
 - `fly logs` shows the startup line and counts.
 - From the local dev page: `http://127.0.0.1:4321/webtiles/daisy/?relay=wss://relay.daisy.thunderbird.cafe/`
   (the table link carries it to the second window).
+- From Raku's dev server: `http://127.0.0.1:5180/?relay=wss://relay.daisy.thunderbird.cafe/#t=raku:table/daisy`
+  (Raku stage 5; its table link carries it too).

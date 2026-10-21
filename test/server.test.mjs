@@ -13,8 +13,11 @@ const TABLE = 'k7q3m2xw9a';
 const SITE = 'https://thunderbird.cafe';
 const quiet = { log: () => {} };
 
+// The pages fly.toml lets in (what the live relay runs with).
+const FLY_ORIGINS = readFileSync(new URL('../fly.toml', import.meta.url), 'utf8').match(/^\s*ALLOWED_ORIGINS = '([^']*)'$/m)[1].split(',');
+
 async function start(cfg = {}) {
-  const r = createRelayServer({ port: 0, host: '127.0.0.1', allowedOrigins: [SITE, 'http://127.0.0.1:4321'], ...quiet, ...cfg });
+  const r = createRelayServer({ port: 0, host: '127.0.0.1', allowedOrigins: FLY_ORIGINS, ...quiet, ...cfg });
   const port = await r.listen();
   return { r, port, url: `ws://127.0.0.1:${port}/` };
 }
@@ -57,16 +60,21 @@ test('health and a plain page for the address; other paths not found', async () 
   await r.close();
 });
 
-test('pages from the allowed sites get in; other sites are turned away; other paths too', async () => {
+test('pages from the allowed sites (fly.toml: thunderbird.cafe, Raku, the two dev servers) get in; other sites are turned away; other paths too', async () => {
   const { r, url } = await start();
   const ok = await page(url);
   assert.ok(ok.ws);
   const local = await page(url, { origin: 'http://127.0.0.1:4321' });
   assert.ok(local.ws);
+  const raku = await page(url, { origin: 'https://raku.lexicographer.space' });    // Raku (stage 5)
+  assert.ok(raku.ws);
+  const rakuDev = await page(url, { origin: 'http://127.0.0.1:5180' });
+  assert.ok(rakuDev.ws);
+  assert.equal((await page(url, { origin: 'https://www.raku.lexicographer.space' })).refused, 403);
   assert.equal((await page(url, { origin: 'https://example.com' })).refused, 403);
   assert.equal((await page(url, { origin: 'http://localhost:4321' })).refused, 403);
   assert.equal((await page(url.replace(/\/$/, '/elsewhere'))).refused, 404);
-  ok.ws.close(); local.ws.close();
+  ok.ws.close(); local.ws.close(); raku.ws.close(); rakuDev.ws.close();
   await r.close();
 });
 
@@ -185,7 +193,8 @@ test('the Fly files: one region, always on (one machine kept running) and counts
   assert.match(toml, /^\s*min_machines_running = 1$/m);                  // always on (owner, Oct 19)
   assert.match(toml, /type = 'connections'/);
   assert.match(toml, /path = '\/health'/);
-  assert.match(toml, /ALLOWED_ORIGINS = 'https:\/\/thunderbird\.cafe,http:\/\/127\.0\.0\.1:4321'$/m);   // the probe's 4322 gone (Oct 19)
+  // the probe's 4322 gone (Oct 19); Raku's live page and dev server added (Oct 21, Raku stage 5)
+  assert.match(toml, /ALLOWED_ORIGINS = 'https:\/\/thunderbird\.cafe,http:\/\/127\.0\.0\.1:4321,https:\/\/raku\.lexicographer\.space,http:\/\/127\.0\.0\.1:5180'$/m);
   assert.match(toml, /fly deploy --ha=false/);
   const docker = readFileSync(new URL('../Dockerfile', import.meta.url), 'utf8');
   assert.match(docker, /COPY server\.js tables\.js lounge-auth\.js atproto-pass\.js lounge\.js atproto-lounge\.js \.\//);
