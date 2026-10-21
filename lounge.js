@@ -12,6 +12,8 @@
 //                       { type: "who" }                 who else is mingling and here now?
 //                       { type: "invite", did }         invite someone to a game
 //                       { type: "answer", id, play }    play: true = Play; false = Not now (nothing goes to the inviter)
+//                       { type: "away" }   { type: "back" }   (Raku step 5b-2: the page is out of sight / in front again)
+//                       { type: "enter", pass, away: true }  join already away (Daisy's tab open but not in front)
 // Relay → page:         { type: "in", did }   { type: "refused", why }   { type: "replaced" }   { type: "idle" }
 //                       { type: "people", at, people: [did, …] }   { type: "people", at, people: [], problem: "blocks" }
 //                       { type: "invited", did }        always the same, whatever happens next (privacy)
@@ -19,7 +21,15 @@
 //                       { type: "knock-gone", id }      the invitation can't be taken up any more
 //                       { type: "table", table, seat, with }        both said yes: go to this table
 //                       { type: "error", why }
+//                       { type: "someone" }             (to a page that is away) someone arrived in the lounge: no name
+//                       { type: "stopped" }             (to a page that is away) 2 hours away, or too many listening: out
 //
+// Away (Raku step 5b-2, owner Oct 21): a page whose Daisy tab isn't in front says "away" and stays connected
+// as a listener: not listed, can't be invited (an invitation on its way lapses), but when another mingler
+// arrives (enters, or comes back from away) it may hear "someone" (never who), unless either has blocked the
+// other, and at most once every 5 minutes. People already in the lounge when it stepped away don't count.
+// Listening lasts up to 2 hours away ("stopped"); "back" puts the page in the lounge again. Pages that never
+// say "away" (the Daisy page) work exactly as before.
 // Privacy (owner, Oct 17 and 18): only minglers who are here are listed, only to a mingler who is here
 // and asks; blocks (direct and by list, either way) keep two players apart, and if the block check fails
 // nobody is listed; an inviter learns nothing about what became of an invitation: "invited" is sent
@@ -32,12 +42,16 @@ export const LOUNGE_LIMITS = Object.freeze({
   sameInviteMs: 5 * 60_000,     // the same person again only after 5 minutes
   invites: 10, invitesPerMs: 10 * 60_000,   // at most 10 invitations in 10 minutes
   maxBytes: 8 * 1024,
+  signalEveryMs: 5 * 60_000,    // "someone" at most once every 5 minutes per listening page (step 5b-2)
+  listenMs: 2 * 60 * 60_000,    // listening lasts up to 2 hours away
+  maxListening: 200,            // at most this many listening at once
 });
 const isDid = (x) => typeof x === 'string' && x.length <= 2048 && /^did:(plc|web):[A-Za-z0-9._:%-]+$/.test(x);
 
 // deps: checkPass(pass) → { did }; hasLoungeRecord(did) → boolean; hiddenFrom(did, others) → Set of the
 // others to hide (blocked either way; throws if the lookup failed); newTableId(); newId(); now(); random().
-export function createLounge({ checkPass, hasLoungeRecord, hiddenFrom, newTableId, newId, now = () => Date.now(), random = Math.random, limits = LOUNGE_LIMITS }) {
+export function createLounge({ checkPass, hasLoungeRecord, hiddenFrom, newTableId, newId, now = () => Date.now(), random = Math.random, limits: given = {} }) {
+  const limits = { ...LOUNGE_LIMITS, ...given };       // (a test's partial limits keep the rest)
   const conns = new Map();      // conn → { did, lastHere, lastWho, invites: [time], sent: Map(did → time), entering }
   const byDid = new Map();      // did → conn (one place in the lounge per account)
   const knocks = new Map();     // id → { from, to, expires }
@@ -57,6 +71,35 @@ export function createLounge({ checkPass, hasLoungeRecord, hiddenFrom, newTableI
     c.did = null;
   }
 
+  // ---------- away and the quiet signal (step 5b-2) ----------
+  const listening = () => [...conns.entries()].filter(([, x]) => x.did && x.away);
+  function goAway(conn, c) {
+    if (c.away) return;
+    if (listening().length >= limits.maxListening) { leave(conn); send(conn, { type: 'stopped', why: 'full' }); close(conn, 4003, 'stopped'); return; }
+    c.away = true; c.awaySince = now();
+    // invitations to or from this page lapse, as if it had left (the inviter sees "No answer" as usual)
+    for (const [id, k] of knocks) {
+      if (k.to === c.did) knocks.delete(id);
+      else if (k.from === c.did) { knocks.delete(id); const to = byDid.get(k.to); if (to) send(to, { type: 'knock-gone', id }); }
+    }
+  }
+  // Someone arrived (entered, or came back from away): tell the listening pages, no name, blocks respected,
+  // at most once every 5 minutes each. If the block check fails, nobody hears anything.
+  async function arrived(conn, c) {
+    const t = now();
+    const targets = listening().filter(([, x]) => x.did !== c.did && t - x.lastSignal >= limits.signalEveryMs && t - x.awaySince < limits.listenMs);
+    for (let i = 0; i < targets.length; i += limits.maxListed) {
+      const chunk = targets.slice(i, i + limits.maxListed);
+      let hidden;
+      try { hidden = await hiddenFrom(c.did, chunk.map(([, x]) => x.did)); } catch { continue; }
+      for (const [lc, x] of chunk) {
+        if (hidden.has(x.did) || !conns.has(lc) || !x.away || byDid.get(x.did) !== lc) continue;
+        x.lastSignal = now();
+        send(lc, { type: 'someone' });
+      }
+    }
+  }
+
   async function enter(conn, c, m) {
     if (c.did || c.entering) return send(conn, { type: 'error', why: 'already in' });
     c.entering = true;
@@ -73,6 +116,8 @@ export function createLounge({ checkPass, hasLoungeRecord, hiddenFrom, newTableI
       c.did = did; c.lastHere = now();
       byDid.set(did, conn);
       send(conn, { type: 'in', did });
+      if (m.away === true) goAway(conn, c);
+      else await arrived(conn, c);
     } finally { c.entering = false; }
   }
 
@@ -80,7 +125,7 @@ export function createLounge({ checkPass, hasLoungeRecord, hiddenFrom, newTableI
     const t = now();
     if (c.lastWho && t - c.lastWho < limits.whoEveryMs) return send(conn, { type: 'error', why: 'too soon' });
     c.lastWho = t;
-    let others = [...byDid.keys()].filter((d) => d !== c.did && t - conns.get(byDid.get(d)).lastHere < limits.idleMs);
+    let others = [...byDid.keys()].filter((d) => d !== c.did && !conns.get(byDid.get(d)).away && t - conns.get(byDid.get(d)).lastHere < limits.idleMs);
     for (let i = others.length - 1; i > 0; i--) { const j = Math.floor(random() * (i + 1)); [others[i], others[j]] = [others[j], others[i]]; }
     others = others.slice(0, limits.maxListed);
     const at = new Date(t).toISOString();
@@ -101,11 +146,11 @@ export function createLounge({ checkPass, hasLoungeRecord, hiddenFrom, newTableI
     c.sent.set(m.did, t);
     send(conn, { type: 'invited', did: m.did });                     // the same answer whatever happens next
     const toConn = byDid.get(m.did);
-    if (!toConn || t - conns.get(toConn).lastHere >= limits.idleMs) return;
+    if (!toConn || conns.get(toConn).away || t - conns.get(toConn).lastHere >= limits.idleMs) return;
     if ([...knocks.values()].some((k) => k.to === m.did && k.expires > t)) return;   // already looking at one
     let hidden;
     try { hidden = await hiddenFrom(c.did, [m.did]); } catch { return; }            // can't check: nothing sent
-    if (hidden.has(m.did) || !byDid.has(m.did) || byDid.get(c.did) !== conn) return;
+    if (hidden.has(m.did) || !byDid.has(m.did) || byDid.get(c.did) !== conn || conns.get(byDid.get(m.did)).away) return;
     const id = newId();
     const expires = now() + limits.knockMs;
     knocks.set(id, { from: c.did, to: m.did, expires });
@@ -115,7 +160,7 @@ export function createLounge({ checkPass, hasLoungeRecord, hiddenFrom, newTableI
   function answer(conn, c, m) {
     const k = typeof m.id === 'string' && knocks.get(m.id);
     if (m.play !== true) { if (k && k.to === c.did) knocks.delete(m.id); return; }   // Not now: dropped; the inviter hears nothing
-    if (!k || k.to !== c.did || k.expires < now() || !byDid.has(k.from)) {
+    if (!k || k.to !== c.did || k.expires < now() || !byDid.has(k.from) || conns.get(byDid.get(k.from)).away) {
       if (k) knocks.delete(m.id);
       return send(conn, { type: 'knock-gone', id: m.id });
     }
@@ -127,7 +172,7 @@ export function createLounge({ checkPass, hasLoungeRecord, hiddenFrom, newTableI
   }
 
   return {
-    open(conn) { conns.set(conn, { did: null, lastHere: 0, lastWho: 0, invites: [], sent: new Map(), entering: false }); },
+    open(conn) { conns.set(conn, { did: null, lastHere: 0, lastWho: 0, invites: [], sent: new Map(), entering: false, away: false, awaySince: 0, lastSignal: -Infinity }); },
     // A text message: returns what to send / close, once any lookups are done.
     async receive(conn, text) {
       const c = conns.get(conn);
@@ -137,6 +182,9 @@ export function createLounge({ checkPass, hasLoungeRecord, hiddenFrom, newTableI
       if (!m || typeof m !== 'object' || typeof m.type !== 'string') { send(conn, { type: 'error', why: 'not a message' }); return flush(); }
       if (m.type === 'enter') await enter(conn, c, m);
       else if (!c.did) send(conn, { type: 'error', why: 'enter first' });
+      else if (m.type === 'away') goAway(conn, c);
+      else if (m.type === 'back') { const was = c.away; c.away = false; c.lastHere = now(); if (was) await arrived(conn, c); }
+      else if (c.away) send(conn, { type: 'error', why: 'away' });    // away: only "back" (or leaving) until then
       else if (m.type === 'here') c.lastHere = now();
       else if (m.type === 'who') { c.lastHere = now(); await who(conn, c); }
       else if (m.type === 'invite') { c.lastHere = now(); await invite(conn, c, m); }
@@ -148,10 +196,13 @@ export function createLounge({ checkPass, hasLoungeRecord, hiddenFrom, newTableI
     // Now and then: idle pages leave; old invitations go.
     sweep() {
       const t = now();
-      for (const [conn, c] of conns) if (c.did && t - c.lastHere >= limits.idleMs) { leave(conn); send(conn, { type: 'idle' }); close(conn, 4002, 'idle'); }
+      for (const [conn, c] of conns) {
+        if (c.did && c.away && t - c.awaySince >= limits.listenMs) { leave(conn); send(conn, { type: 'stopped', why: 'time' }); close(conn, 4003, 'stopped'); }
+        else if (c.did && !c.away && t - c.lastHere >= limits.idleMs) { leave(conn); send(conn, { type: 'idle' }); close(conn, 4002, 'idle'); }
+      }
       for (const [id, k] of knocks) if (k.expires < t) { knocks.delete(id); const to = byDid.get(k.to); if (to) send(to, { type: 'knock-gone', id }); }
       return flush();
     },
-    stats: () => ({ here: byDid.size, connections: conns.size, knocks: knocks.size }),
+    stats: () => ({ here: [...conns.values()].filter((x) => x.did && !x.away).length, listening: listening().length, connections: conns.size, knocks: knocks.size }),
   };
 }

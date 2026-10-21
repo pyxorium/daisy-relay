@@ -37,6 +37,13 @@ with the account's key and addressed to this relay, and the relay checks it.
   the inviter only ever hears "invited" (declined, away, blocked and unnoticed look the same); the same
   person again only after 5 minutes, at most 10 invitations in 10 minutes; someone already looking at an
   invitation gets no second one. On Play the relay makes a table: the inviter at seat 1, the other at seat 2.
+- **Away and the quiet signal (Raku step 5b-2, Oct 21):** a page whose Daisy tab isn't in front says
+  `away` (or enters with `away: true`) and stays connected as a listener: not listed, not invitable (an
+  invitation on its way lapses). When another mingler arrives (enters, or says `back`), each listener that
+  isn't blocked either way hears `{ type: "someone" }`, never who, at most once every 5 minutes; people
+  already there when it stepped away don't count; if the block check fails nobody hears anything.
+  Listening lasts up to 2 hours away (`stopped`, close 4003), at most 200 at once. `back` puts the page in
+  the lounge again. Pages that never say `away` (the Daisy page) work as before.
 - `atproto-lounge.js`: the lounge record read from the account's own server; blocks (direct and by list)
   from Bluesky's public `app.bsky.graph.getRelationships`.
 - Nothing is kept on disk; a restart empties the lounge and the pages join again by themselves.

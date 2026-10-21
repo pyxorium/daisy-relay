@@ -247,3 +247,88 @@ test('the limits are as decided (owner, Oct 18)', () => {
   assert.equal(LOUNGE_LIMITS.sameInviteMs, 5 * 60_000);
   assert.equal(LOUNGE_LIMITS.invites, 10);
 });
+
+// ---------- Raku step 5b-2 (Oct 21): away, back, and the quiet signal ----------
+test('away: not listed, not invitable (an invitation on its way lapses), but it hears "someone" when a mingler arrives, never who', async () => {
+  const L = makeLounge();
+  const a = L.page('a'), b = L.page('b'), c = L.page('c');
+  await L.say(a, { type: 'enter', pass: `pass:${A}` });
+  await L.say(b, { type: 'enter', pass: `pass:${B}` });
+  // B invites A, then A steps away before answering: the invitation lapses
+  const k = L.to(await L.say(b, { type: 'invite', did: A }), a)[0];
+  assert.equal(k.type, 'knock');
+  assert.deepEqual(await L.say(a, { type: 'away' }), [], 'stepping away says nothing to anyone');
+  assert.deepEqual(L.to(await L.say(a, { type: 'answer', id: k.id, play: true }), a), [{ type: 'error', why: 'away' }], 'away: only "back"');
+  L.tick(6000);
+  assert.deepEqual(L.to(await L.say(b, { type: 'who' }), b)[0].people, [], 'away: not listed');
+  L.tick(5 * 60_000);
+  assert.deepEqual(L.to(await L.say(b, { type: 'invite', did: A }), b), [{ type: 'invited', did: A }], 'the inviter hears the same as always');
+  assert.equal(L.lounge.stats().knocks, 0, 'no knock reaches a page that is away');
+  // C arrives: A (away) hears "someone", B (here) hears nothing; the message carries no name
+  const out = await L.say(c, { type: 'enter', pass: `pass:${C}` });
+  assert.deepEqual(L.to(out, a), [{ type: 'someone' }]);
+  assert.deepEqual(L.to(out, b), []);
+  assert.ok(!JSON.stringify(L.to(out, a)).includes(C));
+  assert.deepEqual(L.lounge.stats().listening, 1);
+  // back: listed again, and its own return counts as an arrival for others who are away
+  await L.say(b, { type: 'away' });
+  const back = await L.say(a, { type: 'back' });
+  assert.deepEqual(L.to(back, b), [{ type: 'someone' }], 'coming back from away is an arrival too');
+  L.tick(6000);
+  assert.deepEqual(L.to(await L.say(c, { type: 'who' }), c)[0].people, [A], 'back: listed (B is away)');
+});
+
+test('the signal: at most once every 5 minutes; not for people already there; blocks either way; nothing if the block check fails', async () => {
+  const L = makeLounge({ blocks: [[D, A]] });                                    // D blocks A
+  const a = L.page('a'), b = L.page('b'), c = L.page('c'), d = L.page('d');
+  await L.say(b, { type: 'enter', pass: `pass:${B}` });                          // B is already here
+  await L.say(a, { type: 'enter', pass: `pass:${A}`, away: true });              // A joins away (its tab behind)
+  assert.equal(L.lounge.stats().listening, 1);
+  L.tick(60_000);
+  assert.deepEqual(L.to(await L.say(b, { type: 'here' }), a), [], 'someone already there does not count');
+  assert.deepEqual(L.to(await L.say(c, { type: 'enter', pass: `pass:${C}` }), a), [{ type: 'someone' }]);
+  L.lounge.close(c);
+  const c2 = L.page('c2');
+  L.tick(60_000);
+  assert.deepEqual(L.to(await L.say(c2, { type: 'enter', pass: `pass:${C}` }), a), [], 'within 5 minutes: no second signal');
+  L.tick(5 * 60_000);
+  assert.deepEqual(L.to(await L.say(d, { type: 'enter', pass: `pass:${D}` }), a), [], 'blocked either way: never lights the mark');
+  L.lounge.close(c2);
+  const c3 = L.page('c3');
+  assert.deepEqual(L.to(await L.say(c3, { type: 'enter', pass: `pass:${C}` }), a), [{ type: 'someone' }], 'after 5 minutes: again');
+  const F = makeLounge({ failBlocks: true });
+  const fa = F.page('a'), fb = F.page('b');
+  await F.say(fa, { type: 'enter', pass: `pass:${A}`, away: true });
+  assert.deepEqual(F.to(await F.say(fb, { type: 'enter', pass: `pass:${B}` }), fa), [], 'the block check failed: nobody hears anything');
+});
+
+test('listening lasts up to 2 hours away ("stopped"); away pages never go idle at 10 minutes; at most 200 listening', async () => {
+  const L = makeLounge();
+  const a = L.page('a'), b = L.page('b');
+  await L.say(a, { type: 'enter', pass: `pass:${A}` });
+  await L.say(b, { type: 'enter', pass: `pass:${B}` });
+  await L.say(a, { type: 'away' });
+  L.tick(30 * 60_000);
+  await L.say(b, { type: 'here' });
+  const swept = L.lounge.sweep();
+  assert.deepEqual(L.to(swept, a), [], 'away for 30 minutes: still listening (no idle)');
+  L.tick(91 * 60_000);
+  await L.say(b, { type: 'here' });
+  const later = L.lounge.sweep();
+  assert.deepEqual(L.to(later, a), [{ type: 'stopped', why: 'time' }]);
+  assert.ok(later.some((o) => o.conn === a && o.close && o.close.code === 4003));
+  assert.equal(L.lounge.stats().listening, 0);
+  // the cap
+  assert.equal(LOUNGE_LIMITS.signalEveryMs, 5 * 60_000);
+  assert.equal(LOUNGE_LIMITS.listenMs, 2 * 60 * 60_000);
+  assert.equal(LOUNGE_LIMITS.maxListening, 200);
+  let n = 0;
+  const small = createLounge({ checkPass: async (p) => ({ did: p.slice(5) }), hasLoungeRecord: async () => true, hiddenFrom: async () => new Set(),
+    newTableId: () => 'tablexxxx1', newId: () => `k${++n}`, limits: { ...LOUNGE_LIMITS, maxListening: 1 } });
+  const p1 = {}, p2 = {};
+  small.open(p1); small.open(p2);
+  await small.receive(p1, JSON.stringify({ type: 'enter', pass: `pass:${A}`, away: true }));
+  const full = await small.receive(p2, JSON.stringify({ type: 'enter', pass: `pass:${B}`, away: true }));
+  assert.ok(full.some((o) => o.conn === p2 && o.msg && o.msg.type === 'stopped' && o.msg.why === 'full'));
+  assert.equal(small.stats().listening, 1);
+});
