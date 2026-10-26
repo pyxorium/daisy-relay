@@ -1,6 +1,6 @@
 // atproto-lounge.js: the lounge's lookups in the atproto network (build step 6), for lounge.js.
 //  - hasLoungeRecord(did): does the account have its lounge record (cafe.thunderbird.daisy.lounge/self)?
-//    Read from the account's own server (found through its DID document, @atproto/identity).
+//    Read from the account's own server (found through its DID document, @atproto/identity; did:plc only).
 //  - hiddenFrom(did, others): which of the others must not meet this account: blocked either way, directly
 //    or through a block list. Bluesky's public app.bsky.graph.getRelationships (no sign-in; up to 30 others
 //    a call). Throws when the lookup fails, so the lounge shows nobody rather than someone blocked.
@@ -29,6 +29,8 @@ export function atprotoLounge({ fetchImpl = fetch, idResolver = null, appview = 
   };
   return {
     async hasLoungeRecord(did) {
+      // did:plc only (lounge-auth.js says why): never fetch a did:web document, whatever reaches this.
+      if (typeof did !== 'string' || !/^did:plc:[a-z2-7]{24}$/.test(did)) throw new Error('only did:plc accounts');
       const data = await (await ids()).did.resolveAtprotoData(did);
       const pds = String(data.pds || '').replace(/\/+$/, '');
       if (!pds.startsWith('https://')) throw new Error('no https server for this account');

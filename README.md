@@ -20,10 +20,17 @@ then asks the player's own server for a **pass** (`com.atproto.server.getService
 with the account's key and addressed to this relay, and the relay checks it.
 
 - `lounge-auth.js`: the identity, and `createPassChecker`: Bluesky's `verifyJwt` (format, expiry, audience,
-  method, signature, a second key lookup in case of a rotated key), plus: only accounts (did:plc, did:web;
-  not a service or a bare did:key), passes lasting at most 5 minutes, each pass used once.
+  method, signature, a second key lookup in case of a rotated key), plus: only did:plc accounts (not a
+  service or a bare did:key, and not did:web, below), passes lasting at most 5 minutes, each pass used once.
 - `atproto-pass.js`: wired to `@atproto/xrpc-server` (`verifyJwt`) and `@atproto/identity` (account keys from
-  plc.directory or the account's own domain, cached an hour).
+  plc.directory, cached an hour).
+- **did:plc only (Oct 26, as the Rooms relay):** `@atproto/identity` checks every DID document with zod,
+  which has a memory-exhaustion advisory with no fix for zod 3 (GHSA-mrhx-c7xc-m3w5), and `verifyJwt` looks
+  the account's document up before checking the signature. A did:web document comes from a domain its
+  author controls, so a did:web pass is refused before any lookup (`refused`, why `AccountType`); the key
+  lookup and `hasLoungeRecord` are guarded too. The Daisy page and Raku say "Mingling in the lounge works
+  with most accounts, but not this kind yet." Never run `npm audit fix --force` here (it offers a much older
+  `@atproto/xrpc-server`).
 - The lounge (below) checks every page's pass this way. (Step 6's `POST /lounge/probe`, which served a
   throwaway probe page, was removed in step 7.)
 

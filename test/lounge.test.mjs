@@ -182,6 +182,19 @@ test('atproto-lounge: the record read from the account\'s own server; blocks fro
   await assert.rejects(down.hasLoungeRecord(A));
 });
 
+test('hasLoungeRecord: did:plc only, never a did:web document (GHSA-mrhx-c7xc-m3w5)', async () => {
+  const looked = [], fetched = [];
+  const idResolver = { did: { resolveAtprotoData: async (did) => { looked.push(did); return { did, pds: 'https://pds.example' }; } } };
+  const L = atprotoLounge({ fetchImpl: async (url) => { fetched.push(url); return Response.json({}); }, idResolver, appview: 'https://appview.example' });
+  for (const did of ['did:web:example.com', 'did:web:evil.example%3A8080', 'did:key:zQ3shokFTS3brHcDQrn82RUDfCZESWL1ZdCEJwekUDPQiYBme', `${A}#atproto_pds`, 'did:plc:short', '', null]) {
+    await assert.rejects(L.hasLoungeRecord(did), String(did));
+  }
+  assert.deepEqual(looked, [], 'no DID document looked up');
+  assert.deepEqual(fetched, []);
+  assert.equal(await L.hasLoungeRecord(A), true);
+  assert.deepEqual(looked, [A]);
+});
+
 test('the lounge over real WebSockets at /lounge: enter, who, invite, Play, both sent to one table', async () => {
   const r = createRelayServer({
     port: 0, host: '127.0.0.1', allowedOrigins: ['https://thunderbird.cafe'], log: () => {},

@@ -54,12 +54,36 @@ test('the relay\'s DID document: did:web at its own name, with the #daisy_relay 
   assert.deepEqual(d.service, [{ id: '#daisy_relay', type: 'DaisyRelay', serviceEndpoint: 'https://relay.daisy.thunderbird.cafe' }]);
 });
 
-test('a good pass is accepted and names its account (secp256k1, P-256, did:web)', { skip }, async () => {
+test('a good pass is accepted and names its account (secp256k1, P-256)', { skip }, async () => {
   const { check, pass } = await setup();
   assert.deepEqual(Object.keys(await check(await pass())), ['did', 'exp']);
   assert.equal((await check(await pass())).did, ALICE);
   assert.equal((await check(await pass({ iss: BOB }))).did, BOB);
-  assert.equal((await check(await pass({ iss: WEBBY }))).did, WEBBY);
+});
+
+test('only did:plc: a did:web pass is refused ("AccountType") before anything is looked up (zod, GHSA-mrhx-c7xc-m3w5)', { skip }, async () => {
+  const { check, pass, lookups } = await setup();
+  await refused(check(await pass({ iss: WEBBY })), 'AccountType');
+  await refused(check(await pass({ iss: 'did:web:evil.example%3A8443' , keypair: (await setup()).keys[WEBBY] })), 'AccountType');
+  assert.deepEqual(lookups, [], 'no DID document fetched for did:web');
+  // The guard on the key lookup alone: a verifyJwt that asks for a did:web key anyway never reaches the lookup.
+  const asked = [];
+  const sneaky = createPassChecker({ verifyJwt: async (t, a, l, getKey) => { await getKey(WEBBY, false); return {}; }, getSigningKey: async (d) => { asked.push(d); return 'x'; } });
+  await refused(sneaky('a.b.c'), 'AccountType');
+  const sneakyKey = createPassChecker({ verifyJwt: async (t, a, l, getKey) => { await getKey('did:key:zQ3sh', false); return {}; }, getSigningKey: async (d) => { asked.push(d); return 'x'; } });
+  await refused(sneakyKey('a.b.c'), 'NotAnAccount');
+  assert.deepEqual(asked, []);
+  // A verifyJwt that returns a did:web issuer without any lookup is still refused afterwards.
+  const late = createPassChecker({ verifyJwt: async () => ({ iss: WEBBY, exp: now() + 60, jti: 'j' }), getSigningKey: async () => 'x' });
+  await refused(late('a.b.c'), 'AccountType');
+  // The first check alone: a did:web pass never even reaches verifyJwt.
+  let called = 0;
+  const counted = createPassChecker({ verifyJwt: async (...a) => { called++; return atp.verifyJwt(...a); }, getSigningKey: async () => 'x' });
+  await refused(counted(await pass({ iss: WEBBY })), 'AccountType');
+  assert.equal(called, 0, 'refused before verifyJwt');
+  // A did:plc pass still works, with its key looked up as before.
+  assert.equal((await check(await pass())).did, ALICE);
+  assert.deepEqual(lookups.map(([d]) => d), [ALICE]);
 });
 
 test('refused: another audience, another method, no method, expired, too long', { skip }, async () => {
